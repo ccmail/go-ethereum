@@ -50,6 +50,7 @@ const (
 )
 
 var (
+	//nodeFlags, rpcFlags, 和 metricsFlags 分别存储了各种配置节点、RPC 和度量（metrics）相关的命令行标志（flags）。这些 flag 会在命令行中指定，以便配置以太坊节点的不同功能。
 	// flags that configure the node
 	nodeFlags = slices.Concat([]cli.Flag{
 		utils.IdentityFlag,
@@ -209,11 +210,16 @@ var (
 	}
 )
 
+// app 是一个 cli.App 对象，它定义了命令行应用的基本属性，如应用的名称（“go-ethereum command line interface”）。
 var app = flags.NewApp("the go-ethereum command line interface")
 
 func init() {
 	// Initialize the CLI app and start Geth
+	//初始化命令行应用：定义了应用的行为，命令（如 initCommand, importCommand 等）以及每个命令的动作。
+
+	//app.Action 被设置为 geth，这意味着如果没有指定命令，geth 将作为默认行为。
 	app.Action = geth
+	//通过 app.Commands 定义了许多以太坊节点管理命令（如节点初始化、钱包管理、数据库操作等）。
 	app.Commands = []*cli.Command{
 		// See chaincmd.go:
 		initCommand,
@@ -253,6 +259,7 @@ func init() {
 	}
 	sort.Sort(cli.CommandsByName(app.Commands))
 
+	//app.Flags 设置了命令行标志，这些标志决定了节点的配置选项。
 	app.Flags = slices.Concat(
 		nodeFlags,
 		rpcFlags,
@@ -278,6 +285,7 @@ func init() {
 	}
 }
 
+// 启动一个 Ethereum 节点（geth）
 func main() {
 	if err := app.Run(os.Args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -287,6 +295,10 @@ func main() {
 
 // prepare manipulates memory cache allowance and setups metric system.
 // This function should be called before launching devp2p stack.
+// prepare 函数用于操作内存缓存的允许值并设置度量系统。
+// 在启动 devp2p 堆栈之前应调用此函数。
+// 根据传入的命令行参数，检查是否需要启动特定的测试网络（如 Sepolia、Holesky）或开发模式。
+// 如果没有指定缓存选项且是在主网（Mainnet）运行，则默认增加缓存大小。
 func prepare(ctx *cli.Context) {
 	// If we're running a known preset, log it for convenience.
 	switch {
@@ -337,6 +349,8 @@ func prepare(ctx *cli.Context) {
 // geth is the main entry point into the system if no special subcommand is run.
 // It creates a default node based on the command line arguments and runs it in
 // blocking mode, waiting for it to be shut down.
+// geth 是系统的主要入口点，如果没有运行特殊的子命令。
+// 它根据命令行参数创建一个默认节点，并以阻塞模式运行，等待其关闭。
 func geth(ctx *cli.Context) error {
 	if args := ctx.Args().Slice(); len(args) > 0 {
 		return fmt.Errorf("invalid command: %q", args[0])
@@ -353,8 +367,13 @@ func geth(ctx *cli.Context) error {
 
 // startNode boots up the system node and all registered protocols, after which
 // it starts the RPC/IPC interfaces and the miner.
+// startNode 启动系统节点和所有注册的协议，之后启动 RPC/IPC 接口和矿工。
+// 启动以太坊节点并注册 RPC 和矿工。
+// startNode 的主要作用是启动以太坊节点并注册所有必要的协议和服务。它还处理钱包事件，启动 RPC 客户端，并监控节点的同步状态。如果启用了自动关闭节点功能，它会在节点同步完成后自动关闭。
 func startNode(ctx *cli.Context, stack *node.Node, isConsole bool) {
 	// Start up the node itself
+	// stack 是一个 node.Node 对象，表示以太坊节点的堆栈，它包含了所有的服务和协议。
+	// isConsole 用来决定是否以控制台模式启动，这通常与运行方式相关。
 	utils.StartNode(ctx, stack, isConsole)
 
 	if ctx.IsSet(utils.UnlockedAccountFlag.Name) {
@@ -362,15 +381,26 @@ func startNode(ctx *cli.Context, stack *node.Node, isConsole bool) {
 	}
 
 	// Register wallet event handlers to open and auto-derive wallets
+	//创建一个 events 通道来接收钱包事件（如钱包的到来、打开、丢失等）。
 	events := make(chan accounts.WalletEvent, 16)
+	//通过 stack.AccountManager().Subscribe(events) 订阅钱包事件，如新钱包到来、钱包打开等。
+	//•	钱包事件的种类包括：
+	//•	WalletArrived：表示新的钱包被创建或添加到节点。
+	//•	WalletOpened：表示一个钱包已成功打开。
+	//•	WalletDropped：表示一个钱包被丢弃。
 	stack.AccountManager().Subscribe(events)
 
 	// Create a client to interact with local geth node.
+	//启动 RPC 客户端
+	//stack.Attach() 连接到以太坊节点，并返回一个 RPC 客户端。
 	rpcClient := stack.Attach()
+	//ethclient.NewClient(rpcClient) 使用这个 RPC 客户端创建一个以太坊客户端，允许与本地节点进行交互。
 	ethClient := ethclient.NewClient(rpcClient)
 
+	//异步处理钱包事件
 	go func() {
 		// Open any wallets already attached
+		//如果已有钱包已经连接到节点，它会尝试打开这些钱包。
 		for _, wallet := range stack.AccountManager().Wallets() {
 			if err := wallet.Open(""); err != nil {
 				log.Warn("Failed to open wallet", "url", wallet.URL(), "err", err)
@@ -380,10 +410,12 @@ func startNode(ctx *cli.Context, stack *node.Node, isConsole bool) {
 		for event := range events {
 			switch event.Kind {
 			case accounts.WalletArrived:
+				//如果发现新的钱包，会尝试打开它。
 				if err := event.Wallet.Open(""); err != nil {
 					log.Warn("New wallet appeared, failed to open", "url", event.Wallet.URL(), "err", err)
 				}
 			case accounts.WalletOpened:
+				//当钱包成功打开时，会记录日志并为钱包创建派生路径。
 				status, _ := event.Wallet.Status()
 				log.Info("New wallet appeared", "url", event.Wallet.URL(), "status", status)
 
@@ -396,6 +428,7 @@ func startNode(ctx *cli.Context, stack *node.Node, isConsole bool) {
 				event.Wallet.SelfDerive(derivationPaths, ethClient)
 
 			case accounts.WalletDropped:
+				//当钱包丢失时，会关闭它。
 				log.Info("Old wallet dropped", "url", event.Wallet.URL())
 				event.Wallet.Close()
 			}
@@ -404,8 +437,10 @@ func startNode(ctx *cli.Context, stack *node.Node, isConsole bool) {
 
 	// Spawn a standalone goroutine for status synchronization monitoring,
 	// close the node when synchronization is complete if user required.
+	//如果设置了 ExitWhenSyncedFlag，则会开启一个 goroutine 来监听节点同步的事件。
 	if ctx.Bool(utils.ExitWhenSyncedFlag.Name) {
 		go func() {
+			//通过订阅 downloader.DoneEvent 事件，监听节点是否完成同步。
 			sub := stack.EventMux().Subscribe(downloader.DoneEvent{})
 			defer sub.Unsubscribe()
 			for {
@@ -417,6 +452,7 @@ func startNode(ctx *cli.Context, stack *node.Node, isConsole bool) {
 				if !ok {
 					continue
 				}
+				//当同步完成时，会输出同步完成的日志，并关闭节点。
 				if timestamp := time.Unix(int64(done.Latest.Time), 0); time.Since(timestamp) < 10*time.Minute {
 					log.Info("Synchronisation completed", "latestnum", done.Latest.Number, "latesthash", done.Latest.Hash(),
 						"age", common.PrettyAge(timestamp))

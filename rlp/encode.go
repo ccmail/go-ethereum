@@ -27,6 +27,9 @@ import (
 	"github.com/holiman/uint256"
 )
 
+// 实现了数据结构的 RLP 编码逻辑**。
+// 核心是 Encoder 接口和 encode 方法，通过反射（reflect）动态处理不同类型的数据（如字符串、整数、结构体等），递归生成符合 RLP 规范的字节流。
+
 var (
 	// Common encoded values.
 	// These are useful when implementing EncodeRLP.

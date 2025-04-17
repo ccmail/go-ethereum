@@ -16,6 +16,10 @@
 
 package rlp
 
+//实现 RLP 解码逻辑**。
+//核心是 Decode 函数和流式解码器 Stream，将字节流反序列化为 Go 语言的数据结构。
+//支持严格模式（检查多余字节）和非严格模式。
+
 import (
 	"bufio"
 	"bytes"
