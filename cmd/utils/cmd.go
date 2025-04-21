@@ -79,25 +79,39 @@ func Fatalf(format string, args ...interface{}) {
 }
 
 func StartNode(ctx *cli.Context, stack *node.Node, isConsole bool) {
+	//调用 stack.Start() 将之前通过 makeFullNode 注册好的所有服务（P2P 网络、RPC、eth 服务等）真正启动；
 	if err := stack.Start(); err != nil {
 		Fatalf("Error starting protocol stack: %v", err)
 	}
+	//开启一个匿名的 Goroutine，用来监听操作系统的中断信号（SIGINT、SIGTERM）：
 	go func() {
+		//sigc 用于接收来自操作系统的中断信号。
+		//程序退出时会停止对此信号通道的监听。
 		sigc := make(chan os.Signal, 1)
+		// 监听sigint和sigterm
 		signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
 		defer signal.Stop(sigc)
 
+		//计算最小空闲磁盘空间阈值
 		minFreeDiskSpace := 2 * ethconfig.Defaults.TrieDirtyCache // Default 2 * 256Mb
 		if ctx.IsSet(MinFreeDiskSpaceFlag.Name) {
 			minFreeDiskSpace = ctx.Int(MinFreeDiskSpaceFlag.Name)
 		} else if ctx.IsSet(CacheFlag.Name) || ctx.IsSet(CacheGCFlag.Name) {
 			minFreeDiskSpace = 2 * ctx.Int(CacheFlag.Name) * ctx.Int(CacheGCFlag.Name) / 100
 		}
+		//启动磁盘空间监控
 		if minFreeDiskSpace > 0 {
+			//若低于“临界”值，则向 sigc 发送 SIGTERM，触发关机，防止数据库损坏；
+			//若低于两倍“临界”值，则打印警告。
 			go monitorFreeDiskSpace(sigc, stack.InstanceDir(), uint64(minFreeDiskSpace)*1024*1024)
 		}
 
 		shutdown := func() {
+			//关机时：
+			//•	记录日志；
+			//•	异步关闭 stack（关闭所有子服务）；
+			//•	如果用户连续多次发中断信号，则打印告警“Already shutting down…”；
+			//•	最后确保调试数据落盘，并以 panic 形式结束。
 			log.Info("Got interrupt, shutting down...")
 			go stack.Close()
 			for i := 10; i > 0; i-- {
@@ -111,6 +125,7 @@ func StartNode(ctx *cli.Context, stack *node.Node, isConsole bool) {
 		}
 
 		if isConsole {
+			//控制台模式 (--console): 忽略 Ctrl+C（SIGINT），但收到 SIGTERM 时仍优雅关机；
 			// In JS console mode, SIGINT is ignored because it's handled by the console.
 			// However, SIGTERM still shuts down the node.
 			for {
@@ -121,6 +136,7 @@ func StartNode(ctx *cli.Context, stack *node.Node, isConsole bool) {
 				}
 			}
 		} else {
+			//普通模式: 无论 SIGINT 还是 SIGTERM，在接收到第一个信号后立即执行关机流程。
 			<-sigc
 			shutdown()
 		}

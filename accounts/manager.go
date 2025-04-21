@@ -230,7 +230,12 @@ func (am *Manager) Find(account Account) (Wallet, error) {
 
 // Subscribe creates an async subscription to receive notifications when the
 // manager detects the arrival or departure of a wallet from any of its backends.
+// Subscribe会创建一个异步订阅，以便在管理器检测到钱包从其任何后端的到达或离开时接收通知。
+// 外部模块通过 manager.Subscribe(ch) 获得一个订阅句柄，ch 里就会陆续收到钱包加入/移除的事件；
+// 拿到句柄后，可以通过 Unsubscribe() 停止接收通知。这样就实现了 Manager 与上层逻辑之间的异步事件推送和解耦。
 func (am *Manager) Subscribe(sink chan<- WalletEvent) event.Subscription {
+	//传入一个通道，这个通道会接收所有由 Manager 检测到的 WalletArrived（钱包加入）和 WalletDropped（钱包移除）事件。
+	//Manager 里有一个 event.Feed（名为 feed），它是一个多路广播器（publisher）。feed.Subscribe(sink) 就是把你传入的通道注册到这个广播器里。
 	return am.feed.Subscribe(sink)
 }
 

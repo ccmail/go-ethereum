@@ -182,7 +182,11 @@ func makeConfigNode(ctx *cli.Context) (*node.Node, gethConfig) {
 
 // makeFullNode loads geth configuration and creates the Ethereum backend.
 func makeFullNode(ctx *cli.Context) *node.Node {
+	//调用 makeConfigNode，它会：
+	//•	从默认值、配置文件和命令行标志中，构造好 gethConfig（包括以太坊、节点、度量等配置）；
+	//•	创建并返回一个空的 *node.Node（即“服务容器”）和这个配置对象 cfg。
 	stack, cfg := makeConfigNode(ctx)
+	//如果用户通过命令行指定了 --override-prague 或 --override-verkle，就将相应的版本高度写入 cfg.Eth，用于在启动时强制使用这些升级的区块号。
 	if ctx.IsSet(utils.OverridePrague.Name) {
 		v := ctx.Uint64(utils.OverridePrague.Name)
 		cfg.Eth.OverridePrague = &v
@@ -195,9 +199,12 @@ func makeFullNode(ctx *cli.Context) *node.Node {
 	// Start metrics export if enabled
 	utils.SetupMetrics(&cfg.Metrics)
 
+	//向 stack（节点容器）注册一个以太坊服务：全节点或轻节点，取决于 cfg.Eth.SyncMode。
+	//返回值 backend 是服务的底层接口，eth 是具体的以太坊后端对象（全节点时非 nil，轻节点可能为 nil）。
 	backend, eth := utils.RegisterEthService(stack, &cfg.Eth)
 
 	// Create gauge with geth system and build information
+	//通过一个 Gauge 指标，把当前二进制编译架构（GOARCH）、操作系统、Geth 版本、以及运行时启用了哪些 P2P 协议版本，打出一条“系统元信息”指标。
 	if eth != nil { // The 'eth' backend may be nil in light mode
 		var protos []string
 		for _, p := range eth.Protocols() {
@@ -212,13 +219,16 @@ func makeFullNode(ctx *cli.Context) *node.Node {
 	}
 
 	// Configure log filter RPC API.
+	//把 eth_newFilter、eth_getFilterChanges、eth_uninstallFilter 等日志/事件过滤相关的 JSON-RPC 方法注入到节点的 RPC 服务中，返回一个 filterSystem 用于后续其他模块依赖。
 	filterSystem := utils.RegisterFilterAPI(stack, backend, &cfg.Eth)
 
 	// Configure GraphQL if requested.
+	//如果用户通过 --graphql 打开了 GraphQL 支持，就把 GraphQL 接口（以太坊 HTTP API 的 GraphQL 版本）也一并注册到节点上。
 	if ctx.IsSet(utils.GraphQLEnabledFlag.Name) {
 		utils.RegisterGraphQLService(stack, backend, filterSystem, &cfg.Node)
 	}
 	// Add the Ethereum Stats daemon if requested.
+	//如果在配置里设定了 --ethstats 的地址，就启动一个后台服务，把节点的运行状态发送到指定的 EthStats 监控仪表盘。
 	if cfg.Ethstats.URL != "" {
 		utils.RegisterEthStatsService(stack, backend, cfg.Ethstats.URL)
 	}
@@ -233,6 +243,7 @@ func makeFullNode(ctx *cli.Context) *node.Node {
 
 	if ctx.IsSet(utils.DeveloperFlag.Name) {
 		// Start dev mode.
+		//启动一个本地的模拟信标（Beacon）链，用于快速测试 PoS 共识。
 		simBeacon, err := catalyst.NewSimulatedBeacon(ctx.Uint64(utils.DeveloperPeriodFlag.Name), cfg.Eth.Miner.PendingFeeRecipient, eth)
 		if err != nil {
 			utils.Fatalf("failed to register dev mode catalyst service: %v", err)
@@ -240,6 +251,7 @@ func makeFullNode(ctx *cli.Context) *node.Node {
 		catalyst.RegisterSimulatedBeaconAPIs(stack, simBeacon)
 		stack.RegisterLifecycle(simBeacon)
 	} else if ctx.IsSet(utils.BeaconApiFlag.Name) {
+		//通过 RPC 与外部信标节点对接，拉取 Header 并执行轻量级合约验证。
 		// Start blsync mode.
 		srv := rpc.NewServer()
 		srv.RegisterName("engine", catalyst.NewConsensusAPI(eth))
@@ -247,6 +259,7 @@ func makeFullNode(ctx *cli.Context) *node.Node {
 		blsyncer.SetEngineRPC(rpc.DialInProc(srv))
 		stack.RegisterLifecycle(blsyncer)
 	} else {
+		//启动 Engine API，使得外部信标客户端（如 Prysm、Lighthouse）可以通过 JSON-RPC 与 Geth 对接
 		// Launch the engine API for interacting with external consensus client.
 		err := catalyst.Register(stack, eth)
 		if err != nil {

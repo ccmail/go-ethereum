@@ -70,25 +70,49 @@ func (f *Feed) init(etype reflect.Type) {
 //
 // The channel should have ample buffer space to avoid blocking other subscribers.
 // Slow subscribers are not dropped.
+// Subscribe 方法的职责是在 Feed 上注册一个新的“接收者”通道，以便之后对同一类型的事件调用 Send 时，能够把事件推送给所有订阅者。下面按步骤拆解它的实现细节：
 func (f *Feed) Subscribe(channel interface{}) Subscription {
+	//1. 把参数转成反射对象
+	//channel 是用户传入的通道，类型是 interface{}，先用 reflect.ValueOf 拿到它的反射值 chanval，再通过 chanval.Type() 得到它的 reflect.Type，方便后续检查和操作。
 	chanval := reflect.ValueOf(channel)
 	chantyp := chanval.Type()
+
+	//2. 校验通道类型
+	//确认这个通道至少支持“发送”操作（chan<- T 或 <-chan T 均可，但 <-chan T 只接收，所以必须有 SendDir 标志）。
 	if chantyp.Kind() != reflect.Chan || chantyp.ChanDir()&reflect.SendDir == 0 {
 		panic(errBadChannel)
 	}
+
+	//构造一个 feedSub 实例，保存了：
+	//•	feed: f：指回这个 Feed，后面取消订阅要用；
+	//•	channel: chanval：记录反射值，方便后续通过 reflect.Select 发送；
+	//•	err: make(chan error, 1)：一个缓存长度为 1 的错误通道，用于 Err() 接口（目前不用直接写入错误，但规范里预留）。
 	sub := &feedSub{feed: f, channel: chanval, err: make(chan error, 1)}
 
+	//惰性初始化 Feed
+	//•	sync.Once 保证 init 只执行一次：
+	//•	它会设置 f.etype（事件类型），初始化内部的 removeSub 通道和 sendLock 锁，以及 sendCases 基础结构；
+	//•	chantyp.Elem() 拿到 channel 的元素类型（即用户要订阅的事件类型）。
 	f.once.Do(func() { f.init(chantyp.Elem()) })
 	if f.etype != chantyp.Elem() {
 		panic(feedTypeError{op: "Subscribe", got: chantyp, want: reflect.ChanOf(reflect.SendDir, f.etype)})
 	}
 
+	//把新订阅加入“收件箱”
+
+	//先拿互斥锁 f.mu 保证并发安全；
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	// Add the select case to the inbox.
 	// The next Send will add it to f.sendCases.
+	//•	构造一个 reflect.SelectCase：
+	//•	Dir: reflect.SelectSend 表示这是一个“发送”分支；
+	//•	Chan: chanval 指定发送目标；
 	cas := reflect.SelectCase{Dir: reflect.SelectSend, Chan: chanval}
+	//•	将它放到 f.inbox 里，而不直接插入到正在使用的 f.sendCases，后者正可能在某个并发的 Send 中被使用。
+	//•	下一次调用 Send(value) 时，会先把 inbox 里的订阅批量合并到 sendCases。
 	f.inbox = append(f.inbox, cas)
+	//sub 实现了 Subscription 接口，调用者可以通过它的 Unsubscribe() 方法随时取消本次订阅，也可以通过 Err() 监听可能的错误。
 	return sub
 }
 
